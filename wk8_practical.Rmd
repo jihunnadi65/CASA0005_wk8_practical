@@ -1,7 +1,480 @@
+CASA0005 Week 8 Explaining Spatial Patterns
 
+1. Explain hypothesis testing
+2. Execute regression in R
+3. Describe the assumptions associated with regression models
+4. Explain steps to deal with spatially autocorrelated residuals
 
 ```{r}
+# library a bunch of packages we may (or may not) use
 library(here)
-here
+library(usethis)
+library(tidyverse)
+library(broom)
+library(mapview)
+library(sf)
+library(tmap)
+library(sp)
+library(spdep)
+library(car)
+library(fs)
+library(janitor)
 ```
 
+Read some ward data from London Data Store
+
+```{r}
+download.file("https://data.london.gov.uk/download/statistical-gis-boundary-files-london/9ba8c833-6370-4b11-abdc-314aa020d5e0/statistical-gis-boundaries-london.zip", destfile="statistical-gis-boundaries-london.zip")
+```
+
+Get the zip file and extract it
+
+```{r}
+library(fs)
+listfiles <- dir_info(here::here()) %>%
+  dplyr::filter(str_detect(path, ".zip")) %>% 
+  dplyr::select(path) %>% 
+  pull() %>% 
+  # print out the .gz file
+  print() %>% 
+  as.character() %>% 
+  utils::unzip(exdir=here::here())
+```
+
+Look inisde the zip and read in the shape file
+
+```{r}
+# look what is inside the zip
+
+Londonwards <- fs::dir_info(here::here("statistical-gis-boundaries-london", "ESRI")) %>% 
+  # $ means exact match
+  dplyr::filter(str_detect(path, "London_Ward_CityMerged.shp$")) %>% 
+  dplyr::select(path) %>% 
+  dplyr::pull() %>% 
+  # read the file in
+  sf::st_read()
+```
+
+```{r}
+# check the data
+qtm(Londonwards)
+```
+
+Now we are going to read in some data from the London Data Store
+
+```{r}
+# read in some attribute data
+LondonWardProfiles <- read_csv("https://data.london.gov.uk/download/ward-profiles-and-atlas/772d2d64-e8c6-46cb-86f9-e52b4c7851bc/ward-profiles-excel-version.csv", col_names = TRUE, locale = locale(encoding = 'Latin1'))
+```
+
+```{r}
+# check all of the columns have been read in correctly
+Datatypelist <- LondonWardProfiles %>% 
+  summarise_all(class) %>% 
+  pivot_longer(everything(),
+               names_to = "All_variables",
+               values_to = "Variable_class")
+
+Datatypelist
+```
+
+```{r}
+# we can use readr to deal with the issues in this dataset - which are to do with text values being stored in columns containing numeric values
+# read in some data - couple of things here. Read in specifying a load of likely 'n/a' values, also specify Latin1 as encoding as there is a pound sign (£) in one of the column headers
+
+LondonWardProfiles <- read_csv("https://data.london.gov.uk/download/ward-profiles-and-atlas/772d2d64-e8c6-46cb-86f9-e52b4c7851bc/ward-profiles-excel-version.csv",
+                               na = c("", "NA", "n/a"),
+                               locale = locale(encoding = 'Latin1'),
+                               col_names = TRUE)
+```
+
+```{r}
+# check all of the columns have been read in correctly
+Datatypelist <- LondonWardProfiles %>% 
+  summarise_all(class) %>% 
+  pivot_longer(everything(),
+               names_to = "All_variables",
+               values_to = "Variable_class")
+
+Datatypelist
+```
+
+```{r}
+# merge boundaries and data
+LonWardProfiles <- Londonwards %>% 
+  left_join(.,
+            LondonWardProfiles,
+            by = c("GSS_CODE" = "New code"))
+
+# let's map out dependent variable to see if the join has worked:
+tmap_mode("plot")
+qtm(LonWardProfiles,
+    fill = "Average GCSE capped point scores - 2014",
+    borders = NULL,
+    fill.palette = "Blues")
+```
+
+Let's add in some schools data as well
+
+```{r}
+# might be a good idea to see where the secondary schools are in London too
+london_schools <- read_csv("https://data.london.gov.uk/download/london-schools-atlas/57046151-39a0-45d9-8dc0-27ea7fd02de8/all_schools_xy_2016.csv")
+
+# from the coordinate values stored in the x and y columns, which look like they are latitude and longitude values, create a new points dataset
+lon_schools_sf <- st_as_sf(london_schools,
+                          coords = c("x", "y"),
+                          crs = 4326)
+
+lon_sec_schools_sf <- lon_schools_sf %>% 
+  filter(PHASE=="Secondary")
+
+tmap_mode("plot")
+qtm(lon_sec_schools_sf)
+```
+
+```{r}
+q <- qplot(x = `Unauthorised Absence in All Schools (%) - 2013`, 
+           y = `Average GCSE capped point scores - 2014`, 
+           data=LonWardProfiles)
+
+# plot with a regression line - note that I've added some jitter here as the x-scale is rounded
+q + stat_smooth(method = "lm", se = FALSE, size = 1) + geom_jitter()
+```
+
+The tilde `~` symbole means means "is modelled by"
+
+```{r}
+# run the linear regression model and store its outputs in an object called model1
+Regressiondata <- LonWardProfiles %>% 
+  clean_names() %>% 
+  dplyr::select(average_gcse_capped_point_scores_2014,
+                unauthorised_absence_in_all_schools_percent_2013)
+
+# now model
+model1 <- Regressiondata %>% 
+  lm(average_gcse_capped_point_scores_2014 ~
+       unauthorised_absence_in_all_schools_percent_2013,
+     data = .)
+```
+
+Let's have a closer look at out model
+
+```{r}
+summary(model1)
+```
+
+Let's load `broom` and tidy our output
+
+```{r}
+library(broom)
+tidy(model1)
+```
+
+We can also use `glance()` from `broom` to get a bit more summary information, such as r-squared and the adjusted r-squared value
+
+```{r}
+glance(model1)
+```
+
+Predictions for each point?
+
+```{r}
+library(tidypredict)
+Regressiondata %>% 
+  tidypredict_to_column(model1)
+```
+
+New iteration of modelling is being developed through `tidymodels`, the benefit being that we can easily change the modelling method or `engine`
+
+```{r}
+library(tidymodels)
+
+# set the model
+lm_mod = linear_reg()
+
+# fit the model
+lm_fit <- 
+  lm_mod %>% 
+  fit(average_gcse_capped_point_scores_2014 ~
+        unauthorised_absence_in_all_schools_percent_2013,
+      data=Regressiondata)
+
+# we cover tidy and glance in a minute
+tidy(lm_fit)
+glance(lm_fit)
+```
+
+Assumptions underpinning linear regression
+(1) There is a linear relationship between the dependent and independent variables
+
+```{r}
+# let's check the distribution of these variables first
+# adding ..density.. means that the historgram is a density plot
+ggplot(LonWardProfiles, aes(x=`Average GCSE capped point scores - 2014`)) +
+  geom_histogram(aes(y = ..density..),
+                 binwidth = 5) +
+  geom_density(colour="red",
+               size=1,
+               adjust=1)
+```
+
+```{r}
+library(ggplot2)
+
+# from 21/10 there is an error on the website with 
+# median_house_price_2014 being called median_house_price<c2>2014
+# this was corrected around 23/11 but can be corrected with rename..
+
+LonWardProfiles <- LonWardProfiles %>% 
+  dplyr::rename(median_house_price_2014 = `Median House Price (£) - 2014`) %>% 
+  janitor::clean_names()
+
+ggplot(LonWardProfiles, aes(x=median_house_price_2014)) + geom_histogram()
+```
+
+We would described as a positively skewed distribution
+
+```{r}
+qplot(x = median_house_price_2014,
+      y = average_gcse_capped_point_scores_2014,
+      data = LonWardProfiles)
+```
+
+This indicates that we do not have a linear relationship. One way to achieve a linear relationship between our two variables is to transform the non-normally distributed variable so that it is more normally distributed
+
+However, coefficients for transformed variables are much harder to interpret
+
+```{r}
+ggplot(LonWardProfiles, aes(x=log(median_house_price_2014))) + geom_histogram()
+```
+
+This looks a little more like a normal distribution, while still a little skewed.
+
+Fortunately in R, we can use the `symbox()` function in the `car` package to try a range of transformations along Tukey's ladder
+
+```{r}
+symbox(~median_house_price_2014, LonWardProfiles, na.rm=T, powers=seq(-3, 3, by=.5))
+```
+
+Observing the plot above, it appears that raising our house price variables to the power of -1 should lead to a normal distribution
+
+```{r}
+ggplot(LonWardProfiles, aes(x=(median_house_price_2014)^(-1))) + geom_histogram()
+```
+
+```{r}
+qplot(x = (median_house_price_2014)^(-1),
+      y = average_gcse_capped_point_scores_2014,
+      data = LonWardProfiles)
+```
+
+Compare this with the logged transformation
+
+```{r}
+qplot(x = log(median_house_price_2014),
+      y = average_gcse_capped_point_scores_2014,
+      data = LonWardProfiles)
+```
+
+(2) The rediduals in your model should be normally distributed
+
+```{r}
+# save the residuals into your dataframe
+
+model_data <- model1 %>% 
+  augment(., Regressiondata)
+
+View(model_data)
+
+# plot residuals
+model_data %>% 
+  dplyr::select(.resid) %>% 
+  pull() %>% 
+  qplot() +
+  geom_histogram()
+```
+
+Examining the histogram above, we can be happy that our residuals look relatively normally distributed
+
+(3) No multicollinearity in the independent variables
+
+```{r}
+Regressiondata2 <- LonWardProfiles %>% 
+  clean_names() %>% 
+  dplyr::select(average_gcse_capped_point_scores_2014,
+                unauthorised_absence_in_all_schools_percent_2013,
+                median_house_price_2014)
+
+model2 <- lm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014),data = Regressiondata2)
+
+# show the summary of those outputs
+tidy(model2)
+glance(model2)
+```
+
+```{r}
+# and for future use, write the residuals out
+model_data2 <- model2 %>% 
+  augment(., Regressiondata2)
+
+# also add them to the shapelayer
+LonWardProfiles <- LonWardProfiles %>% 
+  mutate(model2resids = residuals(model2))
+```
+
+Do our two explanatory variables satisfy the no-multicollinearity assumption? If not then we are effectively double-counting the influence of these variables and overstating their explanatory power
+
+```{r}
+library(corrr)
+
+Correlation <- LonWardProfiles %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(average_gcse_capped_point_scores_2014, unauthorised_absence_in_all_schools_percent_2013, median_house_price_2014) %>% 
+  mutate(median_house_price_2014 = log(median_house_price_2014)) %>% 
+  correlate() %>% 
+  # just focus on GCSE and house prices
+  focus(-average_gcse_capped_point_scores_2014, mirror = TRUE)
+```
+
+```{r}
+# visualise the correlation matrix
+rplot(Correlation)
+```
+
+It is easy to see that there is a low correlation (around 30%) between our two independent variables
+
+Another way to check for multicollinearity is to examine the Variance Inflation Factor (VIF) for the model. If we have VIF values for any variable exceeding 10, then we may need to worry and perhaps remove that variable from the analysis
+
+```{r}
+vif(model2)
+```
+
+It would be usesful to check for multicollinearity amongst every variable we want to include
+
+```{r}
+position <- c(10:74)
+
+Correlation_all <- LonWardProfiles %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(position) %>% 
+  correlate()
+```
+
+```{r}
+rplot(Correlation_all)
+```
+
+(4) Homoskedasticity
+
+Errors / residuals in the model exhibit constant / homogeneous variance
+
+The best way to check for heteroskedasticity is to plot the residuals in the model against the predicted values. We are looking for a cloud of points with no apparent patterning to them
+
+```{r}
+# print some model diagnostics
+par(mfrow=c(2,2)) # plot to 2 by 2 array
+plot(model2)
+```
+
+The easier way to produce thiss plot is to use `check_model()` from the `performance` package
+
+```{r}
+library(performance)
+library(see)
+check_model(model2, check = "all")
+```
+
+If you are running a regression model on data that do not have explicit space or time dimensions, then the standard tests for autocorrelation would be the Durbin-Watson test
+
+```{r}
+# run Durbin-Watson test
+DW <- durbinWatsonTest(model2)
+tidy(DW)
+```
+
+DW statistics of our model is 1.61, so some indication of autocorrelation, but perhaps nothing to worry about
+
+However, as we are using spatially referenced data, we should check for spatial autocorrelation
+
+```{r}
+# now plot the residuals
+tmap_mode("view")
+
+tm_shape(LonWardProfiles) +
+  tm_polygons("model2resids",
+              palette = "RdYlBu") +
+tm_shape(lon_sec_schools_sf) +
+  tm_dots(col =  "TYPE")
+```
+
+There seem to be some spatial autocorrelation - now test sytematically
+
+```{r}
+# calculate the centroids of all wards in London
+coordsW <- LonWardProfiles %>% 
+  st_centroid() %>% 
+  st_geometry()
+
+plot(coordsW)
+```
+
+```{r}
+# now we need to generate a spatial weights matrix
+# we'll start with a simple binary matrix of queen's case neighbours
+
+LWard_nb <- LonWardProfiles %>% 
+  poly2nb(., queen=T)
+
+# or nearests neighbours
+knn_wards <- coordsW %>% 
+  knearneigh(., k=4)
+
+LWard_knn <- knn_wards %>% 
+  knn2nb()
+
+# plot them
+plot(LWard_nb, st_geometry(coordsW), col = "red")
+```
+
+```{r}
+plot(LWard_knn, st_geometry(coordsW), col="blue")
+```
+
+```{r}
+# create a spatial weights matrix object from these weights
+# B is binary encoding listing them as neighbours or not, W is row standardised
+Lward.queens_weight <- LWard_nb %>% 
+  nb2listw(., style="W")
+
+Lward.knn_4_weight <- LWard_knn %>% 
+  nb2listw(., style="W")
+```
+
+Now run a Moran's I test on the residuals, first using queen neighbours method
+
+```{r}
+Queen <- LonWardProfiles %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(model2resids) %>% 
+  pull() %>% 
+  moran.test(., Lward.queens_weight) %>% 
+  tidy()
+```
+
+Then k-nearest neighbours
+
+```{r}
+Nearest_neighbour <- LonWardProfiles %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(model2resids) %>% 
+  pull() %>% 
+  moran.test(., Lward.knn_4_weight) %>% 
+  tidy()
+```
+
+```{r}
+# inspect
+Queen
+
+Nearest_neighbour
+```
