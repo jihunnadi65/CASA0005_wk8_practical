@@ -478,3 +478,298 @@ Queen
 
 Nearest_neighbour
 ```
+
+```{r}
+# original model
+model2 <- lm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014), data = LonWardProfiles)
+
+tidy(model2)
+```
+
+Now run a spatially-lagged regression model with a queen's case weights matrix
+'
+```{r}
+library(spatialreg)
+
+slag_dv_model2_queen <- lagsarlm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014), data = LonWardProfiles, nb2listw(LWard_nb, style="C"), method = "eigen")
+
+# what do the outputs show?
+tidy(slag_dv_model2_queen)
+```
+
+```{r}
+# glance() gives model stats but this need something produced from a linear model
+glance(slag_dv_model2_queen)
+```
+
+```{r}
+t <- summary(slag_dv_model2_queen)
+
+sum(t$residuals)
+```
+
+```{r}
+library(lmtest)
+lrtest(slag_dv_model2_queen, model2)
+```
+
+```{r}
+# weight list is just the code from the lagsarlm
+weight_list <- nb2listw(LWard_knn, style = "C")
+
+imp <- impacts(slag_dv_model2_queen, listw=weight_list)
+
+imp
+```
+
+```{r}
+slag_dv_model2_queen_row <- lagsarlm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014), data = LonWardProfiles, nb2listw(LWard_nb, style = "W"), method = "eigen")
+
+W <- as(weight_list, "CsparseMatrix")
+
+trMatc <- trW(W, type = "mult")
+trMC <- trW(W, type = "MC")
+
+imp2 <- impacts(slag_dv_model2_queen_row, tr=trMatc, R=200)
+
+imp3 <- impacts(slag_dv_model2_queen_row, tr=trMC, R=200)
+
+imp2
+imp3
+```
+
+```{r}
+sum <- summary(imp2, zstats=TRUE, short=TRUE)
+
+sum
+```
+KNN casse lag
+
+```{r}
+# run a spatially-lagged regression model
+slag_dv_model2_knn4 <- lagsarlm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014), data = LonWardProfiles, nb2listw(LWard_knn, style = "C"), method = "eigen")
+
+# what do the outputs show?
+tidy(slag_dv_model2_knn4)
+```
+
+```{r}
+# write out the residuals
+LonWardProfiles <- LonWardProfiles %>% 
+  mutate(slag_dv_model2_knn_resids = residuals(slag_dv_model2_knn4))
+
+KNN4Moran <- LonWardProfiles %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(slag_dv_model2_knn_resids) %>%
+  pull() %>% 
+  moran.test(., Lward.knn_4_weight) %>% 
+  tidy()
+
+KNN4Moran
+```
+
+```{r}
+sem_model1 <- errorsarlm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014), data = LonWardProfiles, nb2listw(LWard_knn, style = "C"), method = "eigen")
+
+tidy(sem_model1)
+```
+
+```{r}
+library(spdep)
+Lward.queens_weight_ROW <- LWard_nb %>% 
+  nb2listw(., style = "W")
+
+lm.LMtests(model2, Lward.queens_weight_ROW, test = c("LMerr", "LMlag", "RLMerr", "RLMlag", "SARMA"))
+```
+
+```{r}
+extradata <- read_csv("https://www.dropbox.com/s/qay9q1jwpffxcqj/LondonAdditionalDataFixed.csv?raw=1")
+```
+
+```{r}
+# add the extra data too
+LonWardProfiles <- LonWardProfiles %>% 
+  left_join(.,
+            extradata,
+            by= c("gss_code" = "Wardcode")) %>% 
+  clean_names()
+
+# print some of the column naes
+LonWardProfiles %>% 
+  names() %>% 
+  tail(., n=10)
+```
+
+```{r}
+p <- ggplot(LonWardProfiles,
+            aes(x=unauth_absence_schools11,
+                y= average_gcse_capped_point_scores_2014))
+p + geom_point(aes(colour = inner_outer))
+```
+
+```{r}
+# first, let's make sure R is reading our inner_outer variable as a factor
+Datatypelist <- LonWardProfiles %>% 
+  st_drop_geometry() %>% 
+  # summarise_all only works with .tbl now (not sf) so we drop geometry to check
+  summarise_all(class) %>% 
+  pivot_longer(everything(),
+               names_to="All_variables",
+               values_to="Variable_class")
+
+Datatypelist
+```
+
+```{r}
+# change to factor
+LonWardProfiles <- LonWardProfiles %>% 
+  mutate(inner_outer=as.factor(inner_outer))
+
+# now run the model
+model3 <- lm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014) + inner_outer, data = LonWardProfiles)
+
+tidy(model3)
+```
+
+```{r}
+contrasts(LonWardProfiles$inner_outer)
+```
+
+```{r}
+LonWardProfiles <- LonWardProfiles %>% 
+  mutate(inner_outer = relevel(inner_outer,
+                               ref = "Outer"))
+
+model3 <- lm(average_gcse_capped_point_scores_2014 ~ unauthorised_absence_in_all_schools_percent_2013 + log(median_house_price_2014) + inner_outer, data = LonWardProfiles)
+
+tidy(model3)
+```
+
+```{r}
+# select some variables from the data file
+myvars <- LonWardProfiles %>% 
+  dplyr::select(average_gcse_capped_point_scores_2014,
+                unauthorised_absence_in_all_schools_percent_2013,
+                median_house_price_2014,
+                rate_of_job_seekers_allowance_jsa_claimants_2015,
+                percent_with_level_4_qualifications_and_above_2011,
+                inner_outer)
+
+# check their correlations are OK
+Correlation_myvars <- myvars %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(-inner_outer) %>% 
+  correlate()
+
+# run a final OLS model
+model_final <- lm(average_gcse_capped_point_scores_2014 ~
+                unauthorised_absence_in_all_schools_percent_2013 +
+                log(median_house_price_2014) +
+                inner_outer +
+                rate_of_job_seekers_allowance_jsa_claimants_2015 +
+                percent_with_level_4_qualifications_and_above_2011,
+                data = myvars)
+
+tidy(model_final)
+```
+
+```{r}
+LonWardProfiles <- LonWardProfiles %>% 
+  mutate(model_final_res = residuals(model_final))
+
+par(mfrow=c(2, 2))
+plot(model_final)
+```
+
+```{r}
+qtm(LonWardProfiles, fill = "model_final_res")
+```
+
+```{r}
+final_model_Moran <- LonWardProfiles %>% 
+  st_drop_geometry() %>%
+  dplyr::select(model_final_res) %>% 
+  pull() %>% 
+  moran.test(., Lward.knn_4_weight) %>% 
+  tidy()
+
+final_model_Moran
+```
+
+```{r}
+library(spgwr)
+
+coordsW2 <- st_coordinates(coordsW)
+
+LonWardProfiles2 <- cbind(LonWardProfiles, coordsW2)
+
+GWRbandwidth <- gwr.sel(average_gcse_capped_point_scores_2014 ~
+                          unauthorised_absence_in_all_schools_percent_2013 +
+                          log(median_house_price_2014) +
+                          inner_outer +
+                          rate_of_job_seekers_allowance_jsa_claimants_2015 +
+                          percent_with_level_4_qualifications_and_above_2011,
+                        data = LonWardProfiles2,
+                        coords=cbind(LonWardProfiles2$X, LonWardProfiles2$Y), adapt = T)
+```
+
+```{r}
+GWRbandwidth
+```
+
+```{r}
+# run the gwr model
+gwr.model <- gwr(average_gcse_capped_point_scores_2014 ~
+                          unauthorised_absence_in_all_schools_percent_2013 +
+                          log(median_house_price_2014) +
+                          inner_outer +
+                          rate_of_job_seekers_allowance_jsa_claimants_2015 +
+                          percent_with_level_4_qualifications_and_above_2011,
+                 data = LonWardProfiles2,
+                 coords = cbind(LonWardProfiles2$X, LonWardProfiles2$Y),
+                 adapt = GWRbandwidth,
+                 # matrix output
+                 hatmatrix = TRUE,
+                 # standard error
+                 se.fit = TRUE)
+
+# print the results of the model
+gwr.model
+```
+
+```{r}
+results <- as.data.frame(gwr.model$SDF)
+names(results)
+```
+
+```{r}
+# attach coefficients to original SF
+LonWardProfiles2 <- LonWardProfiles %>% 
+  mutate(coefUnauthAbs = results$unauthorised_absence_in_all_schools_percent_2013,
+         coefHousePrice = results$log.median_house_price_2014.,
+         coefJSA = rate_of_job_seekers_allowance_jsa_claimants_2015,
+         coefLev4Qual = percent_with_level_4_qualifications_and_above_2011)
+```
+
+```{r}
+tm_shape(LonWardProfiles2) +
+  tm_polygons(col = "coefUnauthAbs",
+              palette = "RdBu",
+              alpha = 0.5)
+```
+
+```{r}
+# run the significance test
+sigTest = abs(gwr.model$SDF$"log(median_house_price_2014)")-2 * gwr.model$SDF$"log(median_house_price_2014)_se"
+
+# store significance results
+LonWardProfiles2 <- LonWardProfiles2 %>% 
+  mutate(GWRUnauthSig = sigTest)
+```
+
+```{r}
+tm_shape(LonWardProfiles2) +
+  tm_polygons(col = "GWRUnauthSig",
+              palette = "RdYlBu")
+```
+
